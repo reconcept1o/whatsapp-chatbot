@@ -1,12 +1,11 @@
 // app/api/whatsapp/route.js
 
-// SADECE NEXT RESPONSE'U IMPORT EDİYORUZ!
 import { NextResponse } from "next/server";
 
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 
 /**
- * ADIM 1: Webhook Doğrulama (GET İsteği) - KÖKTEN YALITILDI
+ * ADIM 1: Webhook Doğrulama (GET İsteği)
  */
 export async function GET(req) {
   try {
@@ -31,18 +30,18 @@ export async function GET(req) {
 }
 
 /**
- * ADIM 2: Gerçek Mesajları Alma (POST İsteği) - TÜM BOT MANTIĞI VE IMPORTLAR BURADA
+ * ADIM 2: Gerçek Mesajları Alma (POST İsteği) - TÜM SORGULAR ADMIN CLIENT'I KULLANIR
  */
 export async function POST(req) {
-  // GEREKLİ TÜM IMPORTLAR ARTIK BURADA VE AWAIT İLE YÜKLENİR (Yalıtım için zorunlu)
-  const { supabase } = await import("@/lib/supabaseClient");
+  // SADECE supabaseAdmin'i import ediyoruz (Tüm sorgular için tam yetki garantisi)
+  const { supabaseAdmin } = await import("@/lib/supabaseClient");
   const { sendTextMessage } = await import("@/lib/metaApi");
   const { processMessageWithNlp } = await import("@/lib/nlpManager");
 
   const body = await req.json();
 
   try {
-    // --- 1. Gelen Veriyi Ayıkla ve Filtrele ---
+    // ... (Veri Ayıklama) ...
     const messageEntry = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!messageEntry || messageEntry.type !== "text") {
       return NextResponse.json({ status: "EVENT_IGNORED" }, { status: 200 });
@@ -53,8 +52,8 @@ export async function POST(req) {
     const userPhone = messageEntry.from;
     const messageText = messageEntry.text.body;
 
-    // 2. Müşteriyi (Tenant) Bul ve Aktif mi Kontrol Et
-    const { data: tenant, error: tenantError } = await supabase
+    // 2. Müşteriyi (Tenant) Bul ve Aktif mi Kontrol Et (ADMIN CLIENT)
+    const { data: tenant, error: tenantError } = await supabaseAdmin
       .from("tenants")
       .select("id, is_active, subscription_expires_at")
       .eq("phone_number_id", phoneNumberId)
@@ -74,14 +73,14 @@ export async function POST(req) {
     }
     const tenantId = tenant.id;
 
-    // 3. Müşteriye Ait TÜM Ayarları Çek
+    // 3. Müşteriye Ait TÜM Ayarları Çek (ADMIN CLIENT)
     const [profileResult, settingsResult] = await Promise.all([
-      supabase
+      supabaseAdmin
         .from("bot_profile")
         .select("*")
         .eq("tenant_id", tenantId)
         .maybeSingle(),
-      supabase
+      supabaseAdmin
         .from("bot_settings")
         .select("setting_key, setting_value")
         .eq("tenant_id", tenantId),
@@ -115,9 +114,9 @@ export async function POST(req) {
       );
     }
 
-    // 6. Niyet (Intent) Arama (GÜNCELLENMİŞ VERSİYON)
-    // 6a. Adım: Sadece niyet isimlerini ve ID'lerini çek
-    const { data: rawIntents, error: rawIntentsError } = await supabase
+    // 6. Niyet (Intent) Arama (ADMIN CLIENT ile veri garanti edildi)
+    // 6a. Adım: Niyetleri çek
+    const { data: rawIntents, error: rawIntentsError } = await supabaseAdmin
       .from("intents")
       .select("id, intent_name")
       .eq("tenant_id", tenantId);
@@ -130,17 +129,22 @@ export async function POST(req) {
       );
     }
 
-    // 6b. Adım: Her niyet için örnekleri AYRI AYRI çek (Anonim okuma için zorunlu)
+    // Eğer HİÇ NİYET YOKSA (bu logu üreten yer burasıdır)
+    if (!rawIntents || rawIntents.length === 0) {
+      console.warn("NLU motoru için HİÇ INTENT BULUNAMADI. (Raw data boş).");
+      // Varsayılan cevaba düşmeye devam et
+    }
+
+    // 6b. Adım: Her niyet için örnekleri AYRI AYRI çek
     const intentsWithExamples = await Promise.all(
       (rawIntents || []).map(async (intent) => {
-        const { data: examples } = await supabase
+        const { data: examples } = await supabaseAdmin // <--- ADMIN CLIENT
           .from("intent_examples")
           .select("example_text")
           .eq("intent_id", intent.id);
 
         return {
           intent_name: intent.intent_name,
-          // Veriyi nlpManager'ın beklediği formata dönüştür: [{example_text: '...'}]
           intent_examples: (examples || []).map((e) => ({
             example_text: e.example_text,
           })),
@@ -148,16 +152,16 @@ export async function POST(req) {
       })
     );
 
-    // NLU motorunu çağır
+    // NLU motorunu çağır (mesajı küçük harfe çevirelim ki eşleşsin)
     const nlpResult = await processMessageWithNlp(
-      messageText,
+      messageText.toLowerCase(),
       intentsWithExamples
     );
     // ------------------------------------
 
     // 7. AKIŞ MOTORU (Flow Engine)
     if (nlpResult.intent !== "None") {
-      const { data: flowRecord, error: flowError } = await supabase
+      const { data: flowRecord, error: flowError } = await supabaseAdmin // <--- ADMIN CLIENT
         .from("bot_flows")
         .select("flow_data")
         .eq("tenant_id", tenantId)
@@ -187,7 +191,6 @@ export async function POST(req) {
                 nextNode.data?.question
               ) {
                 await sendTextMessage(userPhone, nextNode.data.question);
-                // TODO: STATE YÖNETİMİ GEREKİR
                 return NextResponse.json(
                   { status: "PROCESSED_FLOW_QUESTION_ASKED" },
                   { status: 200 }
