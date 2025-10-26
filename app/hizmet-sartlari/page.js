@@ -10,7 +10,7 @@ export default function TermsOfServicePage() {
       <p className="mb-4 text-gray-700">
         Kullanıcılar (müşteriler), botu yasa dışı, spam veya Meta'nın
         politikalarına aykırı faaliyetler için kullanamaz. Bu tür bir kullanım
-        tespit edildiğinde hizmet derhal askıya alınabilir.
+        tespit edildiğinde hizmet derhal askıya alınabilir.Bize ulaşın
       </p>
     </div>
   );
