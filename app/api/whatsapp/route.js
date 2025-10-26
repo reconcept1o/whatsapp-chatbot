@@ -70,7 +70,7 @@ export async function POST(req) {
       : null;
     if (!tenant.is_active || (subscriptionDate && subscriptionDate < now)) {
       console.warn(`Pasif veya aboneliği bitmiş tenant (ID: ${tenant.id}).`);
-      return NextResponse.json({ status: "TENANT_INACTIVE" }, { status: true }); // True dönüldü ki, clientta hata fırlatmasın
+      return NextResponse.json({ status: "TENANT_INACTIVE" }, { status: 200 });
     }
     const tenantId = tenant.id;
 
@@ -115,15 +115,24 @@ export async function POST(req) {
       );
     }
 
-    // 6. Niyet (Intent) Arama
-    // Yeni: Örnekler ikinci sorguyla manuel olarak çekilir (NLU motorunu doğru beslemek için)
-    const { data: intents } = await supabase
+    // 6. Niyet (Intent) Arama (GÜNCELLENMİŞ VERSİYON)
+    // 6a. Adım: Sadece niyet isimlerini ve ID'lerini çek
+    const { data: rawIntents, error: rawIntentsError } = await supabase
       .from("intents")
       .select("id, intent_name")
       .eq("tenant_id", tenantId);
 
+    if (rawIntentsError) {
+      console.error("Niyet ID'leri çekilirken hata:", rawIntentsError);
+      return NextResponse.json(
+        { status: "INTENT_ID_FETCH_ERROR" },
+        { status: 200 }
+      );
+    }
+
+    // 6b. Adım: Her niyet için örnekleri AYRI AYRI çek (Anonim okuma için zorunlu)
     const intentsWithExamples = await Promise.all(
-      (intents || []).map(async (intent) => {
+      (rawIntents || []).map(async (intent) => {
         const { data: examples } = await supabase
           .from("intent_examples")
           .select("example_text")
@@ -131,7 +140,10 @@ export async function POST(req) {
 
         return {
           intent_name: intent.intent_name,
-          intent_examples: examples || [],
+          // Veriyi nlpManager'ın beklediği formata dönüştür: [{example_text: '...'}]
+          intent_examples: (examples || []).map((e) => ({
+            example_text: e.example_text,
+          })),
         };
       })
     );
@@ -175,6 +187,7 @@ export async function POST(req) {
                 nextNode.data?.question
               ) {
                 await sendTextMessage(userPhone, nextNode.data.question);
+                // TODO: STATE YÖNETİMİ GEREKİR
                 return NextResponse.json(
                   { status: "PROCESSED_FLOW_QUESTION_ASKED" },
                   { status: 200 }
