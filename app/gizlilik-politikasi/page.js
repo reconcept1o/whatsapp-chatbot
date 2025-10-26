@@ -14,7 +14,7 @@ export default function PrivacyPolicyPage() {
         satılmaz. Bot hizmeti sona erdiğinde, müşterinin talebi üzerine tüm
         veriler sistemimizden silinir.
       </p>
-      <p className="text-sm text-gray-500">Son Güncelleme: 26 Ekim 2025</p>
+      <p className="text-sm text-gray-500">Son Güncelleme: 26 Ekim 2025</p>Bize Ulaşın
     </div>
   );
 }
