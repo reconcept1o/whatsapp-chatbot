@@ -7,7 +7,6 @@ const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 
 /**
  * ADIM 1: Webhook Doğrulama (GET İsteği) - KÖKTEN YALITILDI
- * Bu fonksiyon, diğer hiçbir koda (Supabase, MetaApi) bağımlı değildir.
  */
 export async function GET(req) {
   try {
@@ -16,10 +15,8 @@ export async function GET(req) {
     const token = url.searchParams.get("hub.verify_token");
     const challenge = url.searchParams.get("hub.challenge");
 
-    // Token ve modu kontrol et
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
       console.log("WEBHOOK_VERIFIED - Token Eşleşti.");
-      // Doğrulama başarılı! Meta'ya challenge kodunu geri gönder.
       return new NextResponse(challenge, { status: 200 });
     } else {
       console.warn(
@@ -37,7 +34,7 @@ export async function GET(req) {
  * ADIM 2: Gerçek Mesajları Alma (POST İsteği) - TÜM BOT MANTIĞI VE IMPORTLAR BURADA
  */
 export async function POST(req) {
-  // GEREKLİ TÜM IMPORTLAR ARTIK BURADA VE AWAIT İLE YÜKLENİR
+  // GEREKLİ TÜM IMPORTLAR ARTIK BURADA VE AWAIT İLE YÜKLENİR (Yalıtım için zorunlu)
   const { supabase } = await import("@/lib/supabaseClient");
   const { sendTextMessage } = await import("@/lib/metaApi");
   const { processMessageWithNlp } = await import("@/lib/nlpManager");
@@ -73,7 +70,7 @@ export async function POST(req) {
       : null;
     if (!tenant.is_active || (subscriptionDate && subscriptionDate < now)) {
       console.warn(`Pasif veya aboneliği bitmiş tenant (ID: ${tenant.id}).`);
-      return NextResponse.json({ status: "TENANT_INACTIVE" }, { status: 200 });
+      return NextResponse.json({ status: "TENANT_INACTIVE" }, { status: true }); // True dönüldü ki, clientta hata fırlatmasın
     }
     const tenantId = tenant.id;
 
@@ -119,11 +116,32 @@ export async function POST(req) {
     }
 
     // 6. Niyet (Intent) Arama
+    // Yeni: Örnekler ikinci sorguyla manuel olarak çekilir (NLU motorunu doğru beslemek için)
     const { data: intents } = await supabase
       .from("intents")
-      .select("intent_name, intent_examples ( example_text )")
+      .select("id, intent_name")
       .eq("tenant_id", tenantId);
-    const nlpResult = await processMessageWithNlp(messageText, intents || []);
+
+    const intentsWithExamples = await Promise.all(
+      (intents || []).map(async (intent) => {
+        const { data: examples } = await supabase
+          .from("intent_examples")
+          .select("example_text")
+          .eq("intent_id", intent.id);
+
+        return {
+          intent_name: intent.intent_name,
+          intent_examples: examples || [],
+        };
+      })
+    );
+
+    // NLU motorunu çağır
+    const nlpResult = await processMessageWithNlp(
+      messageText,
+      intentsWithExamples
+    );
+    // ------------------------------------
 
     // 7. AKIŞ MOTORU (Flow Engine)
     if (nlpResult.intent !== "None") {
@@ -157,7 +175,6 @@ export async function POST(req) {
                 nextNode.data?.question
               ) {
                 await sendTextMessage(userPhone, nextNode.data.question);
-                // TODO: STATE YÖNETİMİ GEREKİR
                 return NextResponse.json(
                   { status: "PROCESSED_FLOW_QUESTION_ASKED" },
                   { status: 200 }
@@ -171,7 +188,10 @@ export async function POST(req) {
 
     // 9. Yapay Zeka (AI) Kontrolü
     if (config.ai_enabled) {
-      await sendTextMessage(userPhone, `[AI Cevabı (TODO)]: ${messageText}`);
+      await sendTextMessage(
+        userPhone,
+        config.ai_prompt || `[AI Cevabı (TODO)]: ${messageText}`
+      );
       return NextResponse.json({ status: "PROCESSED_AI" }, { status: 200 });
     }
 
