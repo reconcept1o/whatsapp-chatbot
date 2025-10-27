@@ -1,5 +1,3 @@
-// app/api/whatsapp/route.js
-
 import { NextResponse } from "next/server";
 
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
@@ -30,41 +28,65 @@ export async function GET(req) {
 }
 
 /**
- * ADIM 2: Gerçek Mesajları Alma (POST İsteği) - TÜM SORGULAR ADMIN CLIENT'I KULLANIR
+ * ADIM 2: Gerçek Mesajları Alma (POST İsteği)
  */
 export async function POST(req) {
-  // GEREKLİ TÜM IMPORTLAR ARTIK BURADA VE AWAIT İLE YÜKLENİR
+  // Dinamik importlar
   const { supabaseAdmin } = await import("@/lib/supabaseClient");
   const { sendTextMessage } = await import("@/lib/metaApi");
   const { processMessageWithNlp } = await import("@/lib/nlpManager");
 
-  const body = await req.json();
+  let body;
+  try {
+    body = await req.json();
+  } catch (err) {
+    console.error("JSON parse hatası:", err);
+    return NextResponse.json({ status: "INVALID_JSON" }, { status: 200 });
+  }
+
+  // Gelen payload'i debug için logla (isteğe bağlı, üretimde kapatılabilir)
+  // console.log("Incoming webhook body:", JSON.stringify(body, null, 2));
 
   try {
-    // --- 1. Gelen Veriyi GÜÇLÜ ŞEKİLDE Ayıkla ve Filtrele (HATA ÇÖZÜMÜ) ---
+    // === 1. GÜVENLİ VERİ AYIKLAMA VE FİLTRELEME ===
     const entry = body.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
-    const messageEntry = value?.messages?.[0];
 
-    // Güçlü Filtre: Eğer gelen olay bir metin mesajı değilse (status, read, delivered), hemen çık.
-    // Bu filtreleme, Cannot read properties of undefined (reading 'from') hatasını çözer.
+    // Temel yapı eksikse veya mesaj yoksa
     if (
       !value ||
       !value.messages ||
-      !messageEntry ||
-      messageEntry.type !== "text"
+      !Array.isArray(value.messages) ||
+      value.messages.length === 0
     ) {
-      console.log("Webhook event ignored: Not a text message.");
+      console.log("Webhook event ignored: No messages in payload.");
       return NextResponse.json({ status: "EVENT_IGNORED" }, { status: 200 });
     }
 
-    // Mesaj verilerini güvenle ayıkla
-    const phoneNumberId = value.metadata.phone_number_id;
-    const userPhone = messageEntry.from;
-    const messageText = messageEntry.text.body;
+    const messageEntry = value.messages[0];
 
-    // 2. Müşteriyi (Tenant) Bul ve Aktif mi Kontrol Et (ADMIN CLIENT)
+    // Sadece metin mesajlarını işle
+    if (messageEntry.type !== "text") {
+      console.log(
+        `Webhook event ignored: Message type is ${messageEntry.type}, not text.`
+      );
+      return NextResponse.json({ status: "EVENT_IGNORED" }, { status: 200 });
+    }
+
+    // Gerekli alanlar eksikse
+    const phoneNumberId = value.metadata?.phone_number_id;
+    const userPhone = messageEntry.from;
+    const messageText = messageEntry.text?.body;
+
+    if (!phoneNumberId || !userPhone || !messageText) {
+      console.log(
+        "Webhook event ignored: Missing critical fields (phone_number_id, from, text.body)."
+      );
+      return NextResponse.json({ status: "EVENT_IGNORED" }, { status: 200 });
+    }
+
+    // === 2. Tenant (Müşteri) Kontrolü ===
     const { data: tenant, error: tenantError } = await supabaseAdmin
       .from("tenants")
       .select("id, is_active, subscription_expires_at")
@@ -72,20 +94,26 @@ export async function POST(req) {
       .single();
 
     if (tenantError || !tenant) {
-      console.error(`Tenant bulunamadı (phone_number_id: ${phoneNumberId}).`);
+      console.error(
+        `Tenant bulunamadı (phone_number_id: ${phoneNumberId}). Hata:`,
+        tenantError
+      );
       return NextResponse.json({ status: "TENANT_NOT_FOUND" }, { status: 200 });
     }
+
     const now = new Date();
     const subscriptionDate = tenant.subscription_expires_at
       ? new Date(tenant.subscription_expires_at)
       : null;
+
     if (!tenant.is_active || (subscriptionDate && subscriptionDate < now)) {
       console.warn(`Pasif veya aboneliği bitmiş tenant (ID: ${tenant.id}).`);
       return NextResponse.json({ status: "TENANT_INACTIVE" }, { status: 200 });
     }
+
     const tenantId = tenant.id;
 
-    // 3. Müşteriye Ait TÜM Ayarları Çek (ADMIN CLIENT)
+    // === 3. Bot Ayarlarını Çek ===
     const [profileResult, settingsResult] = await Promise.all([
       supabaseAdmin
         .from("bot_profile")
@@ -97,28 +125,30 @@ export async function POST(req) {
         .select("setting_key, setting_value")
         .eq("tenant_id", tenantId),
     ]);
+
     if (profileResult.error && profileResult.error.code !== "PGRST116") {
-      console.error(`Profil ayarları çekilirken hata:`, profileResult.error);
+      console.error("Profil ayarları çekilirken hata:", profileResult.error);
       return NextResponse.json({ status: "SETTINGS_ERROR" }, { status: 200 });
     }
     if (settingsResult.error) {
-      console.error(`Metin ayarları çekilirken hata:`, settingsResult.error);
+      console.error("Bot ayarları çekilirken hata:", settingsResult.error);
       return NextResponse.json({ status: "SETTINGS_ERROR" }, { status: 200 });
     }
-    const botSettings = settingsResult.data.reduce((acc, setting) => {
+
+    const botSettings = (settingsResult.data || []).reduce((acc, setting) => {
       acc[setting.setting_key] = setting.setting_value;
       return acc;
     }, {});
+
     const botProfile = profileResult.data || {};
     const config = { ...botSettings, ...botProfile };
 
-    // --- BOT MANTIK MOTORU BAŞLANGIÇ ---
-
-    // 5. Mesai Saati Kontrolü
+    // === 4. Mesai Saati Kontrolü ===
     if (config.out_of_hours_reply_enabled && isOffHours(config)) {
       await sendTextMessage(
         userPhone,
-        config.out_of_hours_message || "Şu anda mesai saatleri dışındayız."
+        config.out_of_hours_message ||
+          "Şu anda mesai saatleri dışındayız. En kısa sürede size dönüş yapacağız."
       );
       return NextResponse.json(
         { status: "PROCESSED_OFF_HOURS" },
@@ -126,26 +156,25 @@ export async function POST(req) {
       );
     }
 
-    // 6. Niyet (Intent) Arama (ADMIN CLIENT ile veri garanti edildi)
+    // === 5. Niyet (Intent) Çekme ===
     const { data: rawIntents, error: rawIntentsError } = await supabaseAdmin
       .from("intents")
       .select("id, intent_name")
       .eq("tenant_id", tenantId);
 
     if (rawIntentsError) {
-      console.error("Niyet ID'leri çekilirken KRİTİK HATA:", rawIntentsError);
+      console.error("Niyetler çekilirken hata:", rawIntentsError);
       return NextResponse.json(
-        { status: "INTENT_ID_FETCH_ERROR" },
+        { status: "INTENT_FETCH_ERROR" },
         { status: 200 }
       );
     }
 
-    // Debug logu
     console.log(
-      `Veritabanından çekilen niyet sayısı: ${rawIntents?.length || 0}`
+      `Tenant ${tenantId} için ${rawIntents?.length || 0} niyet bulundu.`
     );
 
-    // Örnekleri çek ve formatla
+    // Örneklerle birlikte niyetleri hazırla
     const intentsWithExamples = await Promise.all(
       (rawIntents || []).map(async (intent) => {
         const { data: examples } = await supabaseAdmin
@@ -162,15 +191,14 @@ export async function POST(req) {
       })
     );
 
-    // NLU motorunu çağır (MESAJ KÜÇÜK HARFE ÇEVRİLDİ)
+    // === 6. NLP ile Mesaj İşleme ===
     const nlpResult = await processMessageWithNlp(
       messageText.toLowerCase(),
       intentsWithExamples
     );
-    // ------------------------------------
 
-    // 7. AKIŞ MOTORU (Flow Engine)
-    if (nlpResult.intent !== "None") {
+    // === 7. Flow Engine (Akış Motoru) ===
+    if (nlpResult.intent && nlpResult.intent !== "None") {
       const triggerIntentName = nlpResult.intent.toLowerCase();
 
       const { data: flowRecord, error: flowError } = await supabaseAdmin
@@ -180,7 +208,7 @@ export async function POST(req) {
         .eq("trigger_intent_name", triggerIntentName)
         .single();
 
-      if (flowRecord && flowRecord.flow_data) {
+      if (!flowError && flowRecord?.flow_data) {
         const flow = flowRecord.flow_data;
         const nodes = flow.nodes || [];
         const edges = flow.edges || [];
@@ -190,7 +218,6 @@ export async function POST(req) {
           const firstEdge = edges.find((edge) => edge.source === startNode.id);
           if (firstEdge) {
             const nextNode = nodes.find((node) => node.id === firstEdge.target);
-
             if (nextNode) {
               if (nextNode.type === "editableNode" && nextNode.data?.message) {
                 await sendTextMessage(userPhone, nextNode.data.message);
@@ -214,19 +241,20 @@ export async function POST(req) {
       }
     }
 
-    // 9. Yapay Zeka (AI) Kontrolü
+    // === 8. AI Cevabı ===
     if (config.ai_enabled) {
-      await sendTextMessage(
-        userPhone,
-        config.ai_prompt || `[AI Cevabı (TODO)]: ${messageText}`
-      );
+      const aiResponse = config.ai_prompt
+        ? config.ai_prompt.replace(/\{message\}/g, messageText)
+        : `[AI Cevabı]: ${messageText}`;
+      await sendTextMessage(userPhone, aiResponse);
       return NextResponse.json({ status: "PROCESSED_AI" }, { status: 200 });
     }
 
-    // 10. Varsayılan Cevap
+    // === 9. Varsayılan Cevap ===
     await sendTextMessage(
       userPhone,
-      config.default_reply || "Üzgünüm, sizi anlayamadım."
+      config.default_reply ||
+        "Üzgünüm, mesajınızı anlayamadım. Lütfen tekrar deneyin."
     );
     return NextResponse.json({ status: "PROCESSED_DEFAULT" }, { status: 200 });
   } catch (error) {
@@ -235,35 +263,34 @@ export async function POST(req) {
   }
 }
 
-// Yardımcı Fonksiyon: isOffHours (Değişiklik Yok)
+// === Yardımcı Fonksiyon: Mesai Saati Kontrolü ===
 function isOffHours(config) {
   try {
     const now = new Date();
-    const dayOfWeek = now.getDay();
+    const dayOfWeek = now.getDay(); // 0 = Pazar, 6 = Cumartesi
     const currentTime = now.getHours() * 100 + now.getMinutes();
     const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+
     let startTimeStr, endTimeStr;
 
     if (isWeekend) {
-      if (!config.work_hours_weekend_start || !config.work_hours_weekend_end) {
+      if (!config.work_hours_weekend_start || !config.work_hours_weekend_end)
         return true;
-      }
       startTimeStr = config.work_hours_weekend_start;
       endTimeStr = config.work_hours_weekend_end;
     } else {
+      if (!config.work_hours_weekday_start || !config.work_hours_weekday_end)
+        return false;
       startTimeStr = config.work_hours_weekday_start;
       endTimeStr = config.work_hours_weekday_end;
     }
 
-    const startTime = parseInt(startTimeStr.replace(":", ""));
-    const endTime = parseInt(endTimeStr.replace(":", ""));
+    const startTime = parseInt(startTimeStr.replace(":", ""), 10);
+    const endTime = parseInt(endTimeStr.replace(":", ""), 10);
 
-    if (currentTime < startTime || currentTime > endTime) {
-      return true;
-    }
-    return false;
+    return currentTime < startTime || currentTime > endTime;
   } catch (e) {
-    console.error("Mesai saati hesaplama hatası:", e);
+    console.error("Mesai saati kontrolü hatası:", e);
     return false;
   }
 }
