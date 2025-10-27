@@ -48,12 +48,14 @@ export async function POST(req) {
     const messageEntry = value?.messages?.[0];
 
     // Güçlü Filtre: Eğer gelen olay bir metin mesajı değilse (status, read, delivered), hemen çık.
+    // Bu filtreleme, Cannot read properties of undefined (reading 'from') hatasını çözer.
     if (
       !value ||
       !value.messages ||
       !messageEntry ||
       messageEntry.type !== "text"
     ) {
+      console.log("Webhook event ignored: Not a text message.");
       return NextResponse.json({ status: "EVENT_IGNORED" }, { status: 200 });
     }
 
@@ -124,7 +126,7 @@ export async function POST(req) {
       );
     }
 
-    // 6. Niyet (Intent) Arama (Veri çekimi garanti edildi)
+    // 6. Niyet (Intent) Arama (ADMIN CLIENT ile veri garanti edildi)
     const { data: rawIntents, error: rawIntentsError } = await supabaseAdmin
       .from("intents")
       .select("id, intent_name")
@@ -138,7 +140,7 @@ export async function POST(req) {
       );
     }
 
-    // Loglama
+    // Debug logu
     console.log(
       `Veritabanından çekilen niyet sayısı: ${rawIntents?.length || 0}`
     );
