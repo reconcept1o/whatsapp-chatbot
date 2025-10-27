@@ -40,14 +40,16 @@ export async function POST(req) {
 
   const body = await req.json();
 
-  try {
-    // --- 1. Gelen Veriyi GÜÇLÜ ŞEKİLDE Ayıkla ve Filtrele (NİHAİ ÇÖZÜM) ---
+  // --- KRİTİK LOGLAMA: Gelen Ham Veriyi Hemen Logla ---
+  console.log("META'DAN GELEN HAM VERİ:", JSON.stringify(body, null, 2));
+  // --- KRİTİK LOGLAMA SONU ---
 
-    // Güvenli zincirleme ile mesaj objesini yakala
+  try {
+    // --- 1. Gelen Veriyi GÜÇLÜ ŞEKİLDE Ayıkla ve Filtrele ---
     const value = body.entry?.[0]?.changes?.[0]?.value;
     const message = value?.messages?.[0]; // Sadece mesajlar dizisindeki ilk öğeyi al
 
-    // NİHAİ FİLTRE: Eğer mesaj objesi yoksa VEYA tipi 'text' değilse, HATASIZ ÇIK
+    // GÜÇLÜ FİLTRE: Eğer mesaj objesi yoksa VEYA tipi 'text' değilse, HATASIZ ÇIK
     if (!value || !message || message.type !== "text") {
       console.log("Webhook event ignored: Not a valid text message.");
       return NextResponse.json({ status: "EVENT_IGNORED" }, { status: 200 });
@@ -55,7 +57,7 @@ export async function POST(req) {
 
     // Mesaj verilerini güvenle ayıkla
     const phoneNumberId = value.metadata.phone_number_id;
-    const userPhone = message.from; // Artık message objesinin var olduğu garanti
+    const userPhone = message.from;
     const messageText = message.text.body;
 
     // 2. Müşteriyi (Tenant) Bul ve Aktif mi Kontrol Et (ADMIN CLIENT)
@@ -120,7 +122,7 @@ export async function POST(req) {
       );
     }
 
-    // 6. Niyet (Intent) Arama (Veri çekimi garanti edildi)
+    // 6. Niyet (Intent) Arama
     const { data: rawIntents, error: rawIntentsError } = await supabaseAdmin
       .from("intents")
       .select("id, intent_name")
@@ -134,7 +136,7 @@ export async function POST(req) {
       );
     }
 
-    // Loglama
+    // Niyet sayısı logu
     console.log(
       `Veritabanından çekilen niyet sayısı: ${rawIntents?.length || 0}`
     );
@@ -156,12 +158,15 @@ export async function POST(req) {
       })
     );
 
-    // NLU motorunu çağır (MESAJ KÜÇÜK HARFE ÇEVRİLDİ)
+    // NLU motorunu çağır
     const nlpResult = await processMessageWithNlp(
       messageText.toLowerCase(),
       intentsWithExamples
     );
-    // ------------------------------------
+    // Log NLU sonucunu görmek için
+    console.log(
+      `NLU Motoru Sonucu: Intent: ${nlpResult.intent}, Score: ${nlpResult.score}`
+    );
 
     // 7. AKIŞ MOTORU (Flow Engine)
     if (nlpResult.intent !== "None") {
