@@ -30,25 +30,35 @@ export async function GET(req) {
 }
 
 /**
- * ADIM 2: Gerçek Mesajları Alma (POST İsteği)
+ * ADIM 2: Gerçek Mesajları Alma (POST İsteği) - TÜM SORGULAR ADMIN CLIENT'I KULLANIR
  */
 export async function POST(req) {
   // GEREKLİ TÜM IMPORTLAR ARTIK BURADA VE AWAIT İLE YÜKLENİR
-  const { supabaseAdmin } = await import("@/lib/supabaseClient"); // SADECE ADMIN IMPORT EDİLDİ
+  const { supabaseAdmin } = await import("@/lib/supabaseClient");
   const { sendTextMessage } = await import("@/lib/metaApi");
   const { processMessageWithNlp } = await import("@/lib/nlpManager");
 
   const body = await req.json();
 
   try {
-    // ... (Veri Ayıklama) ...
-    const messageEntry = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!messageEntry || messageEntry.type !== "text") {
+    // --- 1. Gelen Veriyi GÜÇLÜ ŞEKİLDE Ayıkla ve Filtrele (HATA ÇÖZÜMÜ) ---
+    const entry = body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const messageEntry = value?.messages?.[0];
+
+    // Güçlü Filtre: Eğer gelen olay bir metin mesajı değilse (status, read, delivered), hemen çık.
+    if (
+      !value ||
+      !value.messages ||
+      !messageEntry ||
+      messageEntry.type !== "text"
+    ) {
       return NextResponse.json({ status: "EVENT_IGNORED" }, { status: 200 });
     }
 
-    const phoneNumberId =
-      body.entry[0].changes[0].value.metadata.phone_number_id;
+    // Mesaj verilerini güvenle ayıkla
+    const phoneNumberId = value.metadata.phone_number_id;
     const userPhone = messageEntry.from;
     const messageText = messageEntry.text.body;
 
@@ -114,7 +124,7 @@ export async function POST(req) {
       );
     }
 
-    // 6. Niyet (Intent) Arama (ADMIN CLIENT ile veri garanti edildi)
+    // 6. Niyet (Intent) Arama (Veri çekimi garanti edildi)
     const { data: rawIntents, error: rawIntentsError } = await supabaseAdmin
       .from("intents")
       .select("id, intent_name")
@@ -128,12 +138,12 @@ export async function POST(req) {
       );
     }
 
-    // Debug logu
+    // Loglama
     console.log(
       `Veritabanından çekilen niyet sayısı: ${rawIntents?.length || 0}`
     );
 
-    // 6b. Adım: Her niyet için örnekleri AYRI AYRI çek (ADMIN CLIENT)
+    // Örnekleri çek ve formatla
     const intentsWithExamples = await Promise.all(
       (rawIntents || []).map(async (intent) => {
         const { data: examples } = await supabaseAdmin
@@ -151,7 +161,6 @@ export async function POST(req) {
     );
 
     // NLU motorunu çağır (MESAJ KÜÇÜK HARFE ÇEVRİLDİ)
-    // HATA DÜZELTİLDİ: const nlpResult ikinci kez tanımlanmıyor
     const nlpResult = await processMessageWithNlp(
       messageText.toLowerCase(),
       intentsWithExamples
