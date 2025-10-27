@@ -41,7 +41,7 @@ export async function POST(req) {
   const body = await req.json();
 
   try {
-    // --- 1. Gelen Veriyi Ayıkla ve Filtrele ---
+    // ... (Veri Ayıklama) ...
     const messageEntry = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!messageEntry || messageEntry.type !== "text") {
       return NextResponse.json({ status: "EVENT_IGNORED" }, { status: 200 });
@@ -50,7 +50,7 @@ export async function POST(req) {
     const phoneNumberId =
       body.entry[0].changes[0].value.metadata.phone_number_id;
     const userPhone = messageEntry.from;
-    const messageText = messageEntry.text.body; // Mesajı burada alıyoruz
+    const messageText = messageEntry.text.body;
 
     // 2. Müşteriyi (Tenant) Bul ve Aktif mi Kontrol Et (ADMIN CLIENT)
     const { data: tenant, error: tenantError } = await supabaseAdmin
@@ -151,6 +151,7 @@ export async function POST(req) {
     );
 
     // NLU motorunu çağır (MESAJ KÜÇÜK HARFE ÇEVRİLDİ)
+    // HATA DÜZELTİLDİ: const nlpResult ikinci kez tanımlanmıyor
     const nlpResult = await processMessageWithNlp(
       messageText.toLowerCase(),
       intentsWithExamples
@@ -159,14 +160,13 @@ export async function POST(req) {
 
     // 7. AKIŞ MOTORU (Flow Engine)
     if (nlpResult.intent !== "None") {
-      // Flow'u çekerken de nlpResult.intent'i küçük harfli kullanmak için toLowerCase() ekleyelim
       const triggerIntentName = nlpResult.intent.toLowerCase();
 
       const { data: flowRecord, error: flowError } = await supabaseAdmin
         .from("bot_flows")
         .select("flow_data")
         .eq("tenant_id", tenantId)
-        .eq("trigger_intent_name", triggerIntentName) // Küçük harfli intent adı
+        .eq("trigger_intent_name", triggerIntentName)
         .single();
 
       if (flowRecord && flowRecord.flow_data) {
