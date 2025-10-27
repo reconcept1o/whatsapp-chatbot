@@ -41,28 +41,22 @@ export async function POST(req) {
   const body = await req.json();
 
   try {
-    // --- 1. Gelen Veriyi GÜÇLÜ ŞEKİLDE Ayıkla ve Filtrele (KESİN ÇÖZÜM) ---
-    const value = body.entry?.[0]?.changes?.[0]?.value;
-    const messageEntry = value?.messages?.[0];
+    // --- 1. Gelen Veriyi GÜÇLÜ ŞEKİLDE Ayıkla ve Filtrele (NİHAİ ÇÖZÜM) ---
 
-    // GÜÇLÜ FİLTRE: Eğer gelen olay bir metin mesajı değilse (status, read, delivered), hemen çık.
-    // Bu, 'Cannot read properties of undefined (reading 'from')' hatasını çözer.
-    if (
-      !value ||
-      !value.messages ||
-      !messageEntry ||
-      messageEntry.type !== "text"
-    ) {
-      console.log(
-        "Webhook event ignored: Not a text message or structural error."
-      );
+    // Güvenli zincirleme ile mesaj objesini yakala
+    const value = body.entry?.[0]?.changes?.[0]?.value;
+    const message = value?.messages?.[0]; // Sadece mesajlar dizisindeki ilk öğeyi al
+
+    // NİHAİ FİLTRE: Eğer mesaj objesi yoksa VEYA tipi 'text' değilse, HATASIZ ÇIK
+    if (!value || !message || message.type !== "text") {
+      console.log("Webhook event ignored: Not a valid text message.");
       return NextResponse.json({ status: "EVENT_IGNORED" }, { status: 200 });
     }
 
     // Mesaj verilerini güvenle ayıkla
     const phoneNumberId = value.metadata.phone_number_id;
-    const userPhone = messageEntry.from;
-    const messageText = messageEntry.text.body;
+    const userPhone = message.from; // Artık message objesinin var olduğu garanti
+    const messageText = message.text.body;
 
     // 2. Müşteriyi (Tenant) Bul ve Aktif mi Kontrol Et (ADMIN CLIENT)
     const { data: tenant, error: tenantError } = await supabaseAdmin
@@ -126,7 +120,7 @@ export async function POST(req) {
       );
     }
 
-    // 6. Niyet (Intent) Arama (ADMIN CLIENT ile veri garanti edildi)
+    // 6. Niyet (Intent) Arama (Veri çekimi garanti edildi)
     const { data: rawIntents, error: rawIntentsError } = await supabaseAdmin
       .from("intents")
       .select("id, intent_name")
