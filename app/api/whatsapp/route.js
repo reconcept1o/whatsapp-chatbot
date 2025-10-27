@@ -116,26 +116,29 @@ export async function POST(req) {
 
     // 6. Niyet (Intent) Arama (ADMIN CLIENT ile veri garanti edildi)
     // 6a. Adım: Niyetleri çek
+    // YENİ SORGULAR: Sadece ID ve İsim çekiliyor, örnekleri ikinci sorguda çekmeye devam ediyoruz.
     const { data: rawIntents, error: rawIntentsError } = await supabaseAdmin
       .from("intents")
-      .select("id, intent_name")
+      .select("id, intent_name") // SADECE ID VE İSİM
       .eq("tenant_id", tenantId);
 
     if (rawIntentsError) {
-      console.error("Niyet ID'leri çekilirken hata:", rawIntentsError);
+      // Hata durumunda logu daha açık yazalım
+      console.error("Niyet ID'leri çekilirken KRİTİK HATA:", rawIntentsError);
       return NextResponse.json(
         { status: "INTENT_ID_FETCH_ERROR" },
         { status: 200 }
       );
     }
 
-    // Eğer HİÇ NİYET YOKSA (bu logu üreten yer burasıdır)
-    if (!rawIntents || rawIntents.length === 0) {
-      console.warn("NLU motoru için HİÇ INTENT BULUNAMADI. (Raw data boş).");
-      // Varsayılan cevaba düşmeye devam et
-    }
+    // Loglama: Kaç niyet çekildiğini görelim
+    console.log(
+      `Veritabanından çekilen niyet sayısı (ID'ler): ${rawIntents?.length || 0}`
+    );
 
-    // 6b. Adım: Her niyet için örnekleri AYRI AYRI çek
+    // 6b. Adım: Her niyet için örnekleri AYRI AYRI çek (BU KISIM KALSIN)
+    // ... (intentsWithExamples Promise.all kısmı aynı kalır) ...
+
     const intentsWithExamples = await Promise.all(
       (rawIntents || []).map(async (intent) => {
         const { data: examples } = await supabaseAdmin // <--- ADMIN CLIENT
@@ -150,6 +153,12 @@ export async function POST(req) {
           })),
         };
       })
+    );
+
+    // NLU motorunu çağır
+    const nlpResult = await processMessageWithNlp(
+      messageText.toLowerCase(),
+      intentsWithExamples
     );
 
     // NLU motorunu çağır (mesajı küçük harfe çevirelim ki eşleşsin)
