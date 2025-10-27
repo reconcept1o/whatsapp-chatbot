@@ -42,19 +42,24 @@ export async function POST(req) {
 
   try {
     // --- 1. Gelen Veriyi GÜÇLÜ ŞEKİLDE Ayıkla ve Filtrele (KESİN ÇÖZÜM) ---
-    const entry = body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
+    const value = body.entry?.[0]?.changes?.[0]?.value;
+    const messageEntry = value?.messages?.[0];
 
-    // GÜÇLÜ FİLTRE: Meta'dan gelen gürültü (okundu/durum) olaylarını eler.
-    // Bu, "Cannot read properties of undefined (reading 'from')" hatasını çözer.
-    if (!value || !value.messages || value.messages[0].type !== "text") {
-      console.log("Webhook event ignored: Not a text message.");
+    // GÜÇLÜ FİLTRE: Eğer gelen olay bir metin mesajı değilse (status, read, delivered), hemen çık.
+    // Bu, 'Cannot read properties of undefined (reading 'from')' hatasını çözer.
+    if (
+      !value ||
+      !value.messages ||
+      !messageEntry ||
+      messageEntry.type !== "text"
+    ) {
+      console.log(
+        "Webhook event ignored: Not a text message or structural error."
+      );
       return NextResponse.json({ status: "EVENT_IGNORED" }, { status: 200 });
     }
 
     // Mesaj verilerini güvenle ayıkla
-    const messageEntry = value.messages[0];
     const phoneNumberId = value.metadata.phone_number_id;
     const userPhone = messageEntry.from;
     const messageText = messageEntry.text.body;
@@ -121,7 +126,7 @@ export async function POST(req) {
       );
     }
 
-    // 6. Niyet (Intent) Arama (Veri çekimi garanti edildi)
+    // 6. Niyet (Intent) Arama (ADMIN CLIENT ile veri garanti edildi)
     const { data: rawIntents, error: rawIntentsError } = await supabaseAdmin
       .from("intents")
       .select("id, intent_name")
