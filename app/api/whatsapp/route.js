@@ -30,18 +30,18 @@ export async function GET(req) {
 }
 
 /**
- * ADIM 2: Gerçek Mesajları Alma (POST İsteği) - TÜM SORGULAR ADMIN CLIENT'I KULLANIR
+ * ADIM 2: Gerçek Mesajları Alma (POST İsteği)
  */
 export async function POST(req) {
-  // SADECE supabaseAdmin'i import ediyoruz (Tüm sorgular için tam yetki garantisi)
-  const { supabaseAdmin } = await import("@/lib/supabaseClient");
+  // GEREKLİ TÜM IMPORTLAR ARTIK BURADA VE AWAIT İLE YÜKLENİR
+  const { supabaseAdmin } = await import("@/lib/supabaseClient"); // SADECE ADMIN IMPORT EDİLDİ
   const { sendTextMessage } = await import("@/lib/metaApi");
   const { processMessageWithNlp } = await import("@/lib/nlpManager");
 
   const body = await req.json();
 
   try {
-    // ... (Veri Ayıklama) ...
+    // --- 1. Gelen Veriyi Ayıkla ve Filtrele ---
     const messageEntry = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!messageEntry || messageEntry.type !== "text") {
       return NextResponse.json({ status: "EVENT_IGNORED" }, { status: 200 });
@@ -50,7 +50,7 @@ export async function POST(req) {
     const phoneNumberId =
       body.entry[0].changes[0].value.metadata.phone_number_id;
     const userPhone = messageEntry.from;
-    const messageText = messageEntry.text.body;
+    const messageText = messageEntry.text.body; // Mesajı burada alıyoruz
 
     // 2. Müşteriyi (Tenant) Bul ve Aktif mi Kontrol Et (ADMIN CLIENT)
     const { data: tenant, error: tenantError } = await supabaseAdmin
@@ -115,15 +115,12 @@ export async function POST(req) {
     }
 
     // 6. Niyet (Intent) Arama (ADMIN CLIENT ile veri garanti edildi)
-    // 6a. Adım: Niyetleri çek
-    // YENİ SORGULAR: Sadece ID ve İsim çekiliyor, örnekleri ikinci sorguda çekmeye devam ediyoruz.
     const { data: rawIntents, error: rawIntentsError } = await supabaseAdmin
       .from("intents")
-      .select("id, intent_name") // SADECE ID VE İSİM
+      .select("id, intent_name")
       .eq("tenant_id", tenantId);
 
     if (rawIntentsError) {
-      // Hata durumunda logu daha açık yazalım
       console.error("Niyet ID'leri çekilirken KRİTİK HATA:", rawIntentsError);
       return NextResponse.json(
         { status: "INTENT_ID_FETCH_ERROR" },
@@ -131,17 +128,15 @@ export async function POST(req) {
       );
     }
 
-    // Loglama: Kaç niyet çekildiğini görelim
+    // Debug logu
     console.log(
-      `Veritabanından çekilen niyet sayısı (ID'ler): ${rawIntents?.length || 0}`
+      `Veritabanından çekilen niyet sayısı: ${rawIntents?.length || 0}`
     );
 
-    // 6b. Adım: Her niyet için örnekleri AYRI AYRI çek (BU KISIM KALSIN)
-    // ... (intentsWithExamples Promise.all kısmı aynı kalır) ...
-
+    // 6b. Adım: Her niyet için örnekleri AYRI AYRI çek (ADMIN CLIENT)
     const intentsWithExamples = await Promise.all(
       (rawIntents || []).map(async (intent) => {
-        const { data: examples } = await supabaseAdmin // <--- ADMIN CLIENT
+        const { data: examples } = await supabaseAdmin
           .from("intent_examples")
           .select("example_text")
           .eq("intent_id", intent.id);
@@ -155,13 +150,7 @@ export async function POST(req) {
       })
     );
 
-    // NLU motorunu çağır
-    const nlpResult = await processMessageWithNlp(
-      messageText.toLowerCase(),
-      intentsWithExamples
-    );
-
-    // NLU motorunu çağır (mesajı küçük harfe çevirelim ki eşleşsin)
+    // NLU motorunu çağır (MESAJ KÜÇÜK HARFE ÇEVRİLDİ)
     const nlpResult = await processMessageWithNlp(
       messageText.toLowerCase(),
       intentsWithExamples
@@ -170,11 +159,14 @@ export async function POST(req) {
 
     // 7. AKIŞ MOTORU (Flow Engine)
     if (nlpResult.intent !== "None") {
-      const { data: flowRecord, error: flowError } = await supabaseAdmin // <--- ADMIN CLIENT
+      // Flow'u çekerken de nlpResult.intent'i küçük harfli kullanmak için toLowerCase() ekleyelim
+      const triggerIntentName = nlpResult.intent.toLowerCase();
+
+      const { data: flowRecord, error: flowError } = await supabaseAdmin
         .from("bot_flows")
         .select("flow_data")
         .eq("tenant_id", tenantId)
-        .eq("trigger_intent_name", nlpResult.intent)
+        .eq("trigger_intent_name", triggerIntentName) // Küçük harfli intent adı
         .single();
 
       if (flowRecord && flowRecord.flow_data) {
